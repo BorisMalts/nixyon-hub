@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Отчёт о шагах GitHub Actions для хаба Nixyon.
+
+nixyon-ci step <ключ> <название> -- <команда...>
+    выполняет команду под общей блокировкой ядер, вывод идёт в журнал GitHub и в
+    отчёт хаба; код выхода команды становится кодом шага
+nixyon-ci finish <success|failure|cancelled>
+    закрывает прогон и чистит старые отчёты
+"""
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+REPORTS = Path(os.environ.get("NIXYON_CI_REPORTS", "/ci-reports"))
+LOCK = Path(os.environ.get("NIXYON_HEAVY_LOCK", "/locks/heavy.d"))
+MAX_LOG_BYTES = 8 * 1024 * 1024
+BEAT_EVERY = 5
+STALE_AFTER = 60
+POLL_EVERY = 1
+KEEP_RUNS = 500
+KEEP_SECONDS = 30 * 24 * 60 * 60
+RUN_NAME = re.compile(r"^[0-9]{1,20}-[0-9]{1,4}$")
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def digits(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value.isdigit():
+        sys.exit(f"nixyon-ci: переменная {name} должна быть числом")
+    return value
+
+
+def run_dir() -> Path:
+    return REPORTS / f"{digits('GITHUB_RUN_ID')}-{digits('GITHUB_RUN_ATTEMPT')}"
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_suffix(".part")
+    part.write_text(json.dumps(data, ensure_ascii=False))
+    part.replace(path)
+
+
+def commit_subject() -> str:
+    result = subprocess.run(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=os.environ.get("GITHUB_WORKSPACE", "."),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def ensure_run(root: Path) -> None:
+    if (root / "run.json").exists():
+        return
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = digits("GITHUB_RUN_ID")
+    write_json(
+        root / "run.json",
+        {
+            "run_id": run_id,
+            "attempt": int(digits("GITHUB_RUN_ATTEMPT")),
+            "sha": os.environ.get("GITHUB_SHA", ""),
+            "branch": os.environ.get("GITHUB_REF_NAME", ""),
+            "actor": os.environ.get("GITHUB_ACTOR", ""),
+            "subject": commit_subject(),
+            "url": f"{server}/{repository}/actions/runs/{run_id}",
+            "started_at": now(),
+        },
+    )
+
+
+def age(path: Path) -> float | None:
+    try:
+        return time.time() - path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
+# Тот же порядок, что у агента хаба (heavy_lock.rs): flock между песочницами gVisor
+# не работает, а создание папки атомарно для обеих сторон.
+def is_stale() -> bool:
+    seconds = age(LOCK / "owner")
+    if seconds is None:
+        seconds = age(LOCK)
+    return seconds is not None and seconds > STALE_AFTER
+
+
+def break_stale() -> None:
+    if not is_stale():
+        return
+    moved = LOCK.with_name(f"{LOCK.name}.stale-{os.getpid()}")
+    try:
+        LOCK.rename(moved)
+    except OSError:
+        return
+    for child in moved.iterdir():
+        child.unlink(missing_ok=True)
+    moved.rmdir()
+
+
+def acquire(who: str):
+    told = False
+    while True:
+        try:
+            LOCK.mkdir()
+            break
+        except FileExistsError:
+            pass
+        if is_stale():
+            print("nixyon-ci: предыдущая блокировка ядер брошена, снимаю её", flush=True)
+            break_stale()
+            continue
+        if not told:
+            try:
+                owner = (LOCK / "owner").read_text()[:120]
+            except OSError:
+                owner = "другое задание"
+            print(f"nixyon-ci: жду свободные ядра: {owner}", flush=True)
+            told = True
+        time.sleep(POLL_EVERY)
+    (LOCK / "owner").write_text(who)
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(BEAT_EVERY):
+            try:
+                os.utime(LOCK / "owner")
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=beat, daemon=True)
+    thread.start()
+
+    def release() -> None:
+        stop.set()
+        thread.join()
+        (LOCK / "owner").unlink(missing_ok=True)
+        try:
+            LOCK.rmdir()
+        except OSError:
+            pass
+
+    return release
+
+
+def run_command(command: list[str], log_path: Path) -> int:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    def forward(signum, _frame) -> None:
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+    # GitHub при отмене шлёт сигнал этому скрипту, а останавливать надо всю группу
+    # процессов команды. Ставить обработчик можно только из главного потока.
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, forward)
+    written = 0
+    with log_path.open("wb") as log:
+        assert process.stdout is not None
+        for chunk in iter(lambda: process.stdout.read1(65536), b""):
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            if written < MAX_LOG_BYTES:
+                part = chunk[: MAX_LOG_BYTES - written]
+                log.write(part)
+                written += len(part)
+                if written >= MAX_LOG_BYTES:
+                    log.write("\n[журнал обрезан, полный журнал в GitHub]\n".encode())
+    code = process.wait()
+    return 128 - code if code < 0 else code
+
+
+def step(key: str, title: str, command: list[str]) -> int:
+    root = run_dir()
+    ensure_run(root)
+    steps = root / "steps"
+    steps.mkdir(parents=True, exist_ok=True)
+    n = len(list(steps.glob("*.json"))) + 1
+    release = acquire(f"тесты GitHub: {title}")
+    try:
+        info = {
+            "n": n,
+            "key": key,
+            "title": title,
+            "started_at": now(),
+            "finished_at": None,
+            "exit_code": None,
+        }
+        write_json(steps / f"{n}.json", info)
+        try:
+            code = run_command(command, steps / f"{n}.log")
+        except OSError as error:
+            print(f"nixyon-ci: команда не запустилась: {error}", flush=True)
+            code = 127
+        info.update(finished_at=now(), exit_code=code)
+        write_json(steps / f"{n}.json", info)
+        return code
+    finally:
+        release()
+
+
+def started_at(root: Path) -> int:
+    try:
+        return int(json.loads((root / "run.json").read_text())["started_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return int(root.stat().st_mtime)
+
+
+def remove_tree(root: Path) -> None:
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_dir() and not path.is_symlink():
+            path.rmdir()
+        else:
+            path.unlink(missing_ok=True)
+    root.rmdir()
+
+
+def prune(current: int) -> None:
+    if not REPORTS.is_dir():
+        return
+    runs = [p for p in REPORTS.iterdir() if p.is_dir() and RUN_NAME.match(p.name)]
+    runs.sort(key=lambda p: (started_at(p), p.name), reverse=True)
+    for index, root in enumerate(runs):
+        if index >= KEEP_RUNS or started_at(root) < current - KEEP_SECONDS:
+            remove_tree(root)
+
+
+def finish(status: str) -> int:
+    conclusion = status if status in ("success", "cancelled") else "failure"
+    root = run_dir()
+    ensure_run(root)
+    write_json(root / "finish.json", {"conclusion": conclusion, "finished_at": now()})
+    prune(now())
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) >= 5 and argv[1] == "step" and argv[4] == "--" and len(argv) > 5:
+        return step(argv[2], argv[3], argv[5:])
+    if len(argv) == 3 and argv[1] == "finish":
+        return finish(argv[2])
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

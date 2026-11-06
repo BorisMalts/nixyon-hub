@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Вход в Nixyon</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/login.js" defer></script>
+</head>
+<body>
+  <main class="login">
+    <form class="card" id="login-form" novalidate>
+      <h1>Nixyon</h1>
+      <p>Сборки и терминал команды</p>
+      <label class="field">Почта
+        <input type="email" name="email" autocomplete="username" inputmode="email" required>
+      </label>
+      <label class="field">Пароль
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <div class="error" id="login-error" role="alert" aria-live="assertive"></div>
+      <button class="button button-primary" type="submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

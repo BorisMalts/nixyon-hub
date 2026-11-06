@@ -1,0 +1,172 @@
+name: nixyon
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: deploy/hub.Dockerfile
+    image: nixyon-hub:prod
+    container_name: nixyon_hub
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 256
+    environment:
+      NIXYON_HUB_LISTEN: 10.233.0.10:8080
+      NIXYON_HUB_DB: /data/hub.db
+      NIXYON_PUBLIC_ORIGIN: ${NIXYON_PUBLIC_ORIGIN:?}
+      NIXYON_AGENT_ADDR: 10.231.0.20:7700
+      NIXYON_AGENT_TOKEN_FILE: /run/secrets/agent_token
+      NIXYON_ARTIFACTS_DIR: /artifacts
+      NIXYON_TRUSTED_PROXIES: 10.233.0.2
+      NIXYON_CI_REPORTS_DIR: /ci-reports
+      # Зеркало моделей открыто без входа: файлы под их SHA-256, скрипты загрузки
+      # Nixyon сверяют сумму каждого.
+      NIXYON_MODELS_DIR: /models
+    volumes:
+      - hub-data:/data
+      - artifacts:/artifacts:ro
+      - ci-reports:/ci-reports:ro
+      - models-mirror:/models:ro
+    secrets: [agent_token]
+    networks:
+      nixyon_edge:
+        ipv4_address: 10.233.0.10
+      nixyon_internal:
+        ipv4_address: 10.231.0.10
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/10.233.0.10/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ok <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  workspace:
+    build:
+      context: ..
+      dockerfile: deploy/workspace.Dockerfile
+    image: nixyon-workspace:prod
+    container_name: nixyon_workspace
+    runtime: runsc
+    # Docker при старте сам не поднимает контейнеры с on-failure: после перезагрузки
+    # рабочий контейнер запускает служба nixyon-firewall, когда правила сети уже стоят.
+    restart: on-failure:5
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # Рабочий контейнер и раннер делят один пул: nixyon.slice ограничен 14 ядрами и
+    # 24 ГБ на двоих, его создаёт install.sh.
+    cgroup_parent: nixyon.slice
+    cpus: 14
+    cpu_shares: 256
+    mem_limit: 24g
+    memswap_limit: 24g
+    pids_limit: 4096
+    environment:
+      NIXYON_REPO_URL: ${NIXYON_REPO_URL:?}
+      NIXYON_AGENT_ALLOWED_PEERS: 10.231.0.10
+      NIXYON_HEAVY_LOCK: /locks/heavy.d
+      NIXYON_DATASETS: /datasets
+      NIXYON_MODELS_MIRROR_DIR: /models-mirror
+      NIXYON_TRAINING_DATA: /training-data
+      <<: &fast-build
+        # Без отладочной информации: APK втрое меньше и быстрее собирается.
+        CARGO_PROFILE_DEV_DEBUG: "0"
+        CARGO_PROFILE_DEV_STRIP: debuginfo
+    volumes:
+      - repo:/work
+      - locks:/locks
+      - cargo:/cache/cargo
+      - target:/cache/target
+      - gradle:/home/builder/.gradle
+      - android-home:/home/builder/.android
+      # Отладочный ключ подписи тот же, что у владельца на ноутбуке: APK из хаба ставится
+      # поверх собранного локально. В раннер он не попадает.
+      - ${NIXYON_STATE:?}/secrets/debug.keystore:/home/builder/.android/debug.keystore:ro
+      - artifacts:/artifacts
+      - models-mirror:/models-mirror
+      # Свободные наборы для обучения качает сам рабочий контейнер; хабу они не нужны.
+      - training-data:/training-data
+      - ${NIXYON_STATE:?}/datasets:/datasets:ro
+      # Под gVisor встроенный DNS Docker (127.0.0.11) не работает: его правила iptables
+      # живут в сетевом пространстве, которое сетевой стек gVisor не видит. Берутся
+      # DNS-серверы Hetzner, которыми пользуется сам хост.
+      - ./resolv.conf:/etc/resolv.conf:ro
+    secrets: [agent_token, deploy_key]
+    networks:
+      nixyon_internal:
+        ipv4_address: 10.231.0.20
+      nixyon_egress: {}
+
+  # Раннер GitHub Actions исполняет код из любого пуша в репозиторий, поэтому живёт
+  # отдельно от рабочего контейнера: без ключа развёртывания и токена агента, со своими
+  # кэшами (тест не подменит то, из чего собирается APK для телефона), только с выходом
+  # в интернет.
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/runner.Dockerfile
+    image: nixyon-runner:prod
+    container_name: nixyon_runner
+    runtime: runsc
+    restart: on-failure:5
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cgroup_parent: nixyon.slice
+    cpus: 14
+    cpu_shares: 256
+    mem_limit: 24g
+    memswap_limit: 24g
+    pids_limit: 4096
+    environment:
+      NIXYON_RUNNER_URL: ${NIXYON_RUNNER_URL:?}
+      <<: *fast-build
+    volumes:
+      - runner:/runner
+      - runner-cache:/cache
+      - runner-gradle:/home/builder/.gradle
+      - runner-android:/home/builder/.android
+      - ci-reports:/ci-reports
+      - locks:/locks
+      - ./resolv.conf:/etc/resolv.conf:ro
+    networks:
+      nixyon_egress: {}
+
+secrets:
+  agent_token:
+    file: ${NIXYON_STATE:?}/secrets/agent_token
+  deploy_key:
+    file: ${NIXYON_STATE:?}/secrets/deploy_key
+
+volumes:
+  hub-data:
+  artifacts:
+  repo:
+  cargo:
+  target:
+  gradle:
+  android-home:
+  locks:
+  ci-reports:
+  models-mirror:
+  training-data:
+  runner:
+  runner-cache:
+  runner-gradle:
+  runner-android:
+
+networks:
+  nixyon_edge:
+    external: true
+    name: nixyon_edge
+  nixyon_internal:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.231.0.0/24
+  nixyon_egress:
+    ipam:
+      config:
+        - subnet: 10.232.0.0/24

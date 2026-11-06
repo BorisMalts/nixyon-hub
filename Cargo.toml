@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["hub", "agent"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process", "fs"] }
+tower-http = { version = "0.7.1", features = ["limit", "set-header"] }
+tower = { version = "0.5.3", features = ["util"] }
+http-body = "1.1.0"
+rusqlite = { version = "0.41.0", features = ["bundled"] }
+argon2 = "0.6.0"
+rand = "0.10.3"
+sha2 = "0.11.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["formatting"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+thiserror = "2.0.21"
+portable-pty = "0.9.0"
+rustix = { version = "1.1.5", features = ["fs", "std"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

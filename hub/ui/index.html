@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Nixyon</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/vendor/xterm.css">
+  <script src="/assets/vendor/xterm.js" defer></script>
+  <script src="/assets/vendor/addon-fit.js" defer></script>
+  <script src="/assets/app.js" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Nixyon</span>
+    <div class="who">
+      <span id="who"></span>
+      <button class="button button-plain" id="logout" type="button">Выйти</button>
+    </div>
+  </header>
+  <div class="shell">
+    <nav class="tabs" aria-label="Разделы">
+      <a class="tab" href="#builds" data-tab="builds">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8zM3 8l9 5 9-5M12 13v8"/></svg>
+        <span>Сборки</span>
+      </a>
+      <a class="tab" href="#tests" data-tab="tests">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3M7.5 14h9"/></svg>
+        <span>Тесты</span>
+      </a>
+      <a class="tab" href="#quality" data-tab="quality">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"/></svg>
+        <span>Качество</span>
+      </a>
+      <a class="tab" href="#training" data-tab="training">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M4.6 6.6l2.1 2.1M17.3 15.3l2.1 2.1M3 12h3M18 12h3M4.6 17.4l2.1-2.1M17.3 8.7l2.1-2.1M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+        <span>Обучение</span>
+      </a>
+      <a class="tab" href="#terminal" data-tab="terminal">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM7 10l3 2-3 2M12 15h5"/></svg>
+        <span>Terminal</span>
+      </a>
+      <a class="tab" href="#stats" data-tab="stats">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M7 16v-5M12 16V6M17 16v-8"/></svg>
+        <span>Статистика</span>
+      </a>
+    </nav>
+
+    <main>
+      <section class="view section" data-view="builds" aria-labelledby="builds-title" hidden>
+        <div class="section-head">
+          <h1 id="builds-title">Сборки</h1>
+          <div class="actions">
+            <button class="button button-secondary" id="pull" type="button">Обновить код</button>
+            <button class="button button-primary" id="build" type="button">Собрать APK</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="status" id="status" aria-live="polite">Заданий ещё не было</div>
+          <div class="queue" id="queue" aria-live="polite" hidden></div>
+          <pre class="log" id="log" aria-label="Журнал текущего задания"></pre>
+        </div>
+        <div class="error" id="action-error" role="alert"></div>
+        <h2>Готовые APK</h2>
+        <div class="card">
+          <ul class="rows" id="builds" aria-label="Готовые APK"></ul>
+        </div>
+        <h2>История заданий</h2>
+        <div class="card">
+          <ul class="rows" id="history" aria-label="История заданий"></ul>
+        </div>
+      </section>
+
+      <section class="view section" data-view="tests" aria-labelledby="tests-title" hidden>
+        <div class="section-head">
+          <h1 id="tests-title">Тесты</h1>
+          <div class="filters">
+            <div class="segmented" role="group" aria-label="Какие прогоны показать">
+              <button type="button" data-filter="all" aria-pressed="true">Все</button>
+              <button type="button" data-filter="failed" aria-pressed="false">Упавшие</button>
+            </div>
+            <label class="select">
+              <span class="visually-hidden">Ветка</span>
+              <select id="branch"><option value="">Все ветки</option></select>
+            </label>
+          </div>
+        </div>
+        <div class="error" id="tests-error" role="alert"></div>
+        <div class="card">
+          <ul class="rows" id="runs" aria-label="Прогоны тестов"></ul>
+        </div>
+      </section>
+
+      <section class="view section" data-view="quality" aria-labelledby="quality-title" hidden>
+        <div class="section-head">
+          <h1 id="quality-title">Качество</h1>
+        </div>
+        <p class="hint">Записи из выбранных наборов идут через весь конвейер приложения. Из каждого набора можно взять часть: клипы выбираются вперемешку, но всегда одинаково.</p>
+        <div class="card">
+          <div class="presets" id="quality-presets" role="group" aria-label="Готовые настройки"></div>
+          <ul class="rows datasets" id="quality-datasets" aria-label="Наборы для проверки">
+            <li class="empty">Загружаю список наборов…</li>
+          </ul>
+          <div class="plan-total">
+            <div>
+              <div class="row-title" id="quality-total">Ничего не выбрано</div>
+              <div class="row-meta" id="quality-total-meta"></div>
+            </div>
+            <button class="button button-primary" id="quality-start" type="button" disabled>Проверить качество</button>
+          </div>
+        </div>
+        <div class="error" id="quality-error" role="alert"></div>
+        <div class="card">
+          <div class="status" id="quality-status" aria-live="polite">Проверок ещё не было</div>
+          <div class="progress" id="quality-progress" hidden>
+            <div class="progress-track" role="progressbar" aria-label="Ход проверки" aria-valuemin="0" aria-valuemax="100" id="quality-bar">
+              <div class="progress-fill" id="quality-bar-fill"></div>
+            </div>
+            <div class="progress-text">
+              <strong id="quality-percent">0,0 %</strong>
+              <span id="quality-eta"></span>
+            </div>
+          </div>
+          <details class="log-group" id="quality-prep" hidden>
+            <summary>Подготовка и сборка, строк: <span id="quality-prep-count">0</span></summary>
+            <pre class="log" id="quality-prep-log" aria-label="Журнал подготовки и сборки"></pre>
+          </details>
+          <div class="log-now" id="quality-now" aria-live="polite" hidden>
+            <div id="quality-now-progress"></div>
+            <div id="quality-now-sets"></div>
+          </div>
+          <pre class="log" id="quality-log" aria-label="Журнал проверки качества"></pre>
+          <details class="log-group" id="quality-engine" hidden>
+            <summary>Предупреждения движка: <span id="quality-engine-count">0</span></summary>
+            <pre class="log" id="quality-engine-log" aria-label="Предупреждения движка"></pre>
+          </details>
+        </div>
+        <h2>Итог последней проверки</h2>
+        <div class="card">
+          <div class="report" id="quality-report" aria-live="polite">
+            <p class="empty">Здесь появится отчёт последней проверки.</p>
+          </div>
+        </div>
+        <h2>История проверок</h2>
+        <div class="card">
+          <div class="clip-filters">
+            <label class="select">
+              <span class="visually-hidden">Что показать на графике</span>
+              <select id="history-metric"></select>
+            </label>
+          </div>
+          <figure class="chart">
+            <figcaption class="visually-hidden" id="history-chart-title">WER по прогонам</figcaption>
+            <div class="chart-plot">
+              <div id="history-chart"></div>
+              <div class="chart-tip" id="history-tip" role="status" hidden></div>
+            </div>
+          </figure>
+          <ul class="rows" id="history-runs" aria-label="Прошлые прогоны"></ul>
+        </div>
+        <h2>Сравнение прогонов</h2>
+        <div class="card">
+          <div class="clip-filters">
+            <label class="select compare-pick">
+              <span>Было</span>
+              <select id="compare-old"></select>
+            </label>
+            <label class="select compare-pick">
+              <span>Стало</span>
+              <select id="compare-new"></select>
+            </label>
+          </div>
+          <div class="report" id="compare-table"></div>
+        </div>
+        <h2>Клипы последней проверки</h2>
+        <div class="card">
+          <div class="clip-filters">
+            <label class="select">
+              <span class="visually-hidden">Набор</span>
+              <select id="clips-set"></select>
+            </label>
+            <label class="select">
+              <span class="visually-hidden">Какие клипы показать</span>
+              <select id="clips-tag">
+                <option value="">Все клипы</option>
+                <option value="errors" selected>С ошибками</option>
+                <option value="empty">Пустой ответ</option>
+                <option value="cut_start">Обрыв начала</option>
+                <option value="cut_end">Обрыв конца</option>
+                <option value="digits">Цифры в ответе</option>
+                <option value="failed">Текст не получен</option>
+              </select>
+            </label>
+            <label class="clip-search">
+              <span class="visually-hidden">Найти слово в эталоне, ответе или id клипа</span>
+              <input id="clips-search" type="search" placeholder="Слово или id клипа" maxlength="200" autocomplete="off" spellcheck="false">
+            </label>
+            <a class="button button-plain" id="clips-download" hidden>Скачать клипы набора</a>
+          </div>
+          <p class="clip-legend" id="clips-legend">Сверху худшие. <del>Зачёркнуто</del>: слово эталона пропущено или заменено, <ins>подчёркнуто</ins>: что распознано вместо него или лишнее слово.</p>
+          <div class="status" id="clips-count" aria-live="polite">Клипов пока нет</div>
+          <ul class="rows" id="clips-list" aria-label="Клипы набора"></ul>
+          <div class="clip-more">
+            <button class="button button-secondary" id="clips-more" type="button" hidden>Показать ещё</button>
+          </div>
+        </div>
+        <h2>Файлы отчёта</h2>
+        <div class="card">
+          <ul class="rows" id="quality-files" aria-label="Файлы отчёта о качестве"></ul>
+        </div>
+      </section>
+
+      <section class="view section" data-view="training" aria-labelledby="training-title" hidden>
+        <div class="section-head">
+          <h1 id="training-title">Обучение</h1>
+        </div>
+        <p class="hint">Классификатор «ребёнок или взрослый» по голосу. Обучается на train выбранных наборов и проверяется на их test и на наборах только для проверки. Свободные наборы сервер качает сам, это около 15 ГБ.</p>
+        <div class="card">
+          <ul class="rows datasets" id="training-sets" aria-label="Наборы для обучения"></ul>
+          <div class="plan-total">
+            <div>
+              <div class="row-title">Признаки обеих моделей считаются часами</div>
+              <div class="row-meta">Идёт по очереди с остальными тяжёлыми заданиями</div>
+            </div>
+            <button class="button button-primary" id="training-start" type="button">Обучить</button>
+          </div>
+        </div>
+        <div class="error" id="training-error" role="alert"></div>
+        <div class="card">
+          <div class="status" id="training-status" aria-live="polite">Обучений ещё не было</div>
+          <div class="progress" id="training-progress" hidden>
+            <div class="progress-track" role="progressbar" aria-label="Ход обучения" aria-valuemin="0" aria-valuemax="100" id="training-bar">
+              <div class="progress-fill" id="training-bar-fill"></div>
+            </div>
+            <div class="progress-text">
+              <strong id="training-percent">0,0 %</strong>
+              <span id="training-eta"></span>
+            </div>
+          </div>
+          <pre class="log" id="training-log" aria-label="Журнал обучения"></pre>
+        </div>
+        <h2>Итог последнего обучения</h2>
+        <div class="card">
+          <div class="report" id="training-report" aria-live="polite">
+            <p class="empty">Здесь появится отчёт последнего обучения.</p>
+          </div>
+        </div>
+        <h2>Обучения и веса</h2>
+        <div class="card">
+          <ul class="rows" id="training-runs" aria-label="Прошлые обучения"></ul>
+        </div>
+      </section>
+
+      <section class="view section terminal-section" data-view="terminal" id="terminal-section" aria-labelledby="terminal-title" hidden>
+        <div class="section-head">
+          <h1 id="terminal-title">Terminal</h1>
+          <div class="terminal-controls">
+            <button class="button button-secondary button-icon" id="terminal-expand" type="button" aria-label="На весь экран" title="На весь экран" hidden>
+              <svg class="icon" id="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+              <svg class="icon" id="icon-collapse" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+            </button>
+            <button class="button button-secondary" id="terminal-toggle" type="button">Открыть терминал</button>
+          </div>
+        </div>
+        <p class="hint">Терминал рабочего контейнера: код в /work/repo, сеть только в интернет.</p>
+        <div class="terminal-box" id="terminal" hidden><div class="terminal-screen" id="terminal-screen"></div></div>
+      </section>
+
+      <section class="view section" data-view="stats" aria-labelledby="stats-title" hidden>
+        <div class="section-head">
+          <h1 id="stats-title">Статистика</h1>
+        </div>
+        <div class="error" id="stats-error" role="alert"></div>
+        <div class="tiles" id="tiles"></div>
+        <div class="card chart-card">
+          <h2>Сборка APK по дням</h2>
+          <p class="hint">Медиана за день, последние 14 дней</p>
+          <div class="chart" id="chart-builds"></div>
+        </div>
+        <div class="card chart-card">
+          <h2>Прогон тестов по дням</h2>
+          <p class="hint">Медиана за день, последние 14 дней</p>
+          <div class="chart" id="chart-tests"></div>
+        </div>
+        <div class="card chart-card">
+          <h2>Самые долгие шаги тестов</h2>
+          <p class="hint">Медиана и худшее время</p>
+          <ul class="bars" id="slowest"></ul>
+        </div>
+        <div class="card chart-card">
+          <h2>Кто сколько запускал</h2>
+          <div class="table-wrap">
+            <table class="table" id="people">
+              <thead><tr><th scope="col">Кто</th><th scope="col" class="num">Сборки</th><th scope="col" class="num">Обновления кода</th><th scope="col" class="num">Прогоны тестов</th><th scope="col" class="num">Проверки качества</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+  <dialog id="qr-dialog" aria-labelledby="qr-title">
+    <h2 id="qr-title">Скачать на телефон</h2>
+    <img id="qr-image" alt="QR-код ссылки на APK">
+    <p class="row-meta">Откройте камерой и войдите тем же аккаунтом</p>
+    <button class="button button-secondary" id="qr-close" type="button">Готово</button>
+  </dialog>
+
+  <dialog class="log-dialog" id="log-dialog" aria-labelledby="log-title">
+    <div class="log-dialog-head">
+      <h2 id="log-title">Журнал</h2>
+      <button class="button button-secondary" id="log-close" type="button">Закрыть</button>
+    </div>
+    <p class="hint" id="log-cut" hidden>Журнал длинный, показан его конец.</p>
+    <pre class="log log-full" id="log-text"></pre>
+  </dialog>
+</body>
+</html>

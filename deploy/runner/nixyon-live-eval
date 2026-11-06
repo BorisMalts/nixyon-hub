@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Прогон записей без разметки через eval из репозитория Nixyon с четырьмя сочетаниями
+модели голоса и нейросегментации.
+
+nixyon-live-eval --eval <программа eval> --models <папка моделей> --records <папка записей>
+    --out <папка опыта> -- <запись> [...]
+
+Одна запись идёт одним процессом eval со всеми сочетаниями (--combo): распознаётся один
+раз (куски речи параллельно, вместе с нейросегментациями), эмбеддинги и отрезки
+считаются на каждое сочетание параллельно. Расшифровки ложатся
+в <папка опыта>/<сочетание>/<запись>.json. Записи идут одновременно, самые длинные
+стартуют первыми; длинной записи достаётся больше параллельных эмбеддингов, так что
+вместе процессы занимают ядра контейнера. Пиковая память и время процессора каждого
+прогона берутся из wait4. Вывод eval идёт в журнал задания с пометкой [запись]. В папке
+опыта остаются combos.json (сочетания) и runs.jsonl (строка на запись). Код выхода 1,
+если хоть один прогон упал.
+"""
+
+import argparse
+import json
+import os
+import queue
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+COMBOS = {
+    "A": ("CAM++ и pyannote, порог 0,6", "campplus,pyannote,0.6"),
+    "B": ("ReDimNet2 и pyannote, порог 0,7", "redimnet2,pyannote,0.7"),
+    "C": ("CAM++ и Sortformer fp32, порог 0,6", "campplus,sortformer-fp32,0.6"),
+    "D": ("CAM++ и Sortformer int8, порог 0,6", "campplus,sortformer-int8,0.6"),
+}
+# Записи идут одновременно, не больше стольких процессов: у каждого свои копии моделей
+# (до 6,5 ГБ на процесс), четыре разом подходят к пределу памяти контейнера в 24 ГБ.
+PARALLEL = 3
+LONG_SEC = 30 * 60
+# Потоки ORT на модель, параллельные эмбеддинги и параллельные распознавания: длинной
+# записи больше, она дольше всех работает одна, когда короткие уже закончились.
+LONG_THREADS = (2, 6, 3)
+SHORT_THREADS = (2, 3, 2)
+MAX_LINE = 4000
+RECORD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PRINT = threading.Lock()
+
+
+@dataclass
+class Run:
+    record: str
+    audio_sec: float
+
+    @property
+    def long(self) -> bool:
+        return self.audio_sec >= LONG_SEC
+
+    @property
+    def threads(self) -> tuple[int, int, int]:
+        return LONG_THREADS if self.long else SHORT_THREADS
+
+
+def say(line: str) -> None:
+    with PRINT:
+        print(line, flush=True)
+
+
+def wav_seconds(path: Path) -> float:
+    """Длительность WAV по заголовку: размер данных на байты в секунду."""
+    with path.open("rb") as f:
+        head = f.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            raise ValueError(f"{path.name}: не WAV")
+        byte_rate = None
+        while True:
+            chunk = f.read(8)
+            if len(chunk) < 8:
+                raise ValueError(f"{path.name}: нет данных звука")
+            kind, size = chunk[:4], struct.unpack("<I", chunk[4:])[0]
+            if kind == b"fmt ":
+                fmt = f.read(size)
+                if len(fmt) < 12:
+                    raise ValueError(f"{path.name}: короткий заголовок формата")
+                byte_rate = struct.unpack("<I", fmt[8:12])[0]
+                if size % 2:
+                    f.seek(1, os.SEEK_CUR)
+            elif kind == b"data":
+                if not byte_rate:
+                    raise ValueError(f"{path.name}: данные звука раньше формата")
+                # Записанный на лету WAV может не знать своего размера: тогда до конца файла.
+                if size == 0xFFFFFFFF:
+                    size = path.stat().st_size - f.tell()
+                return size / byte_rate
+            else:
+                f.seek(size + size % 2, os.SEEK_CUR)
+
+
+def record_file(records: Path, name: str) -> Path:
+    if not RECORD_NAME.match(name):
+        raise ValueError(f"недопустимое имя записи {name!r}")
+    path = records / f"{name}.wav"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"записи {name} нет")
+    return path
+
+
+def plan_runs(records: Path, names: list[str]) -> list[Run]:
+    seconds = {name: wav_seconds(record_file(records, name)) for name in names}
+    # Длинные первыми: иначе в конце остался бы один долгий прогон на свободных ядрах.
+    return [Run(n, seconds[n]) for n in sorted(names, key=lambda n: -seconds[n])]
+
+
+def command(args: argparse.Namespace, run: Run) -> list[str]:
+    model_threads, embed_jobs, asr_jobs = run.threads
+    cmd = [
+        str(args.eval),
+        str(args.models),
+        str(args.records),
+        "--no-truth",
+        "--dump",
+        str(args.out),
+        "--model-threads",
+        str(model_threads),
+        "--embed-jobs",
+        str(embed_jobs),
+        "--asr-jobs",
+        str(asr_jobs),
+    ]
+    for name, (_, spec) in COMBOS.items():
+        cmd += ["--combo", f"{name}={spec}"]
+    cmd.append(run.record)
+    # Если упадёт сам драйвер (например, по пределу времени задания), eval не останется
+    # работать без него.
+    setpriv = shutil.which("setpriv")
+    if sys.platform.startswith("linux") and setpriv:
+        cmd = [setpriv, "--pdeathsig", "KILL", "--", *cmd]
+    return cmd
+
+
+def peak_mb(rusage) -> float:
+    # ru_maxrss в Linux в килобайтах, в macOS в байтах.
+    scale = 1 if sys.platform == "darwin" else 1024
+    return round(rusage.ru_maxrss * scale / (1024 * 1024), 1)
+
+
+def execute(args: argparse.Namespace, run: Run) -> dict:
+    tag = f"[{run.record}]"
+    started = time.monotonic()
+    summaries = {}
+    try:
+        proc = subprocess.Popen(
+            command(args, run),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as e:
+        say(f"{tag} eval не запустился: {e}")
+        return result(run, None, time.monotonic() - started, None, None, {})
+    for raw in proc.stdout:
+        line = raw.decode("utf-8", "replace").rstrip()[:MAX_LINE]
+        for combo in COMBOS:
+            if line.startswith(f"{run.record} {combo}: звук "):
+                summaries[combo] = line
+        say(f"{tag} {line}")
+    proc.stdout.close()
+    _, status, rusage = os.wait4(proc.pid, 0)
+    code = os.waitstatus_to_exitcode(status)
+    # Процесс уже собран через wait4, Popen не должен ждать его второй раз.
+    proc.returncode = code
+    cpu = rusage.ru_utime + rusage.ru_stime
+    return result(run, code, time.monotonic() - started, peak_mb(rusage), cpu, summaries)
+
+
+def result(run: Run, code, wall: float, peak, cpu, summaries: dict) -> dict:
+    model_threads, embed_jobs, asr_jobs = run.threads
+    return {
+        "record": run.record,
+        "exit_code": code,
+        "audio_sec": round(run.audio_sec, 3),
+        "wall_sec": round(wall, 1),
+        "cpu_sec": None if cpu is None else round(cpu, 1),
+        "peak_rss_mb": peak,
+        "model_threads": model_threads,
+        "embed_jobs": embed_jobs,
+        "asr_jobs": asr_jobs,
+        "summaries": summaries,
+        "dumps": {c: f"{c}/{run.record}.json" for c in COMBOS},
+    }
+
+
+def run_all(args: argparse.Namespace, runs: list[Run]) -> list[dict]:
+    done: queue.Queue = queue.Queue()
+    pending = list(runs)
+    active: list[Run] = []
+    results = []
+    runs_file = args.out / "runs.jsonl"
+
+    def work(run: Run) -> None:
+        try:
+            outcome = execute(args, run)
+        except Exception as e:  # прогон с ошибкой драйвера считается упавшим
+            say(f"[{run.record}] ошибка драйвера: {e}")
+            outcome = result(run, None, 0.0, None, None, {})
+        done.put((run, outcome))
+
+    while pending or active:
+        while pending and len(active) < PARALLEL:
+            run = pending.pop(0)
+            active.append(run)
+            threads, jobs, asr = run.threads
+            say(
+                f"[{run.record}] старт, одновременно {len(active)}, потоков на модель "
+                f"{threads}, эмбеддингов параллельно {jobs}, распознаваний {asr}"
+            )
+            threading.Thread(target=work, args=(run,), daemon=True).start()
+        run, outcome = done.get()
+        active.remove(run)
+        results.append(outcome)
+        with runs_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(outcome, ensure_ascii=False) + "\n")
+        say(
+            f"[{run.record}] код {outcome['exit_code']}, {outcome['wall_sec']} с, "
+            f"процессор {outcome['cpu_sec']} с, память {outcome['peak_rss_mb']} МБ"
+        )
+    return results
+
+
+def table(results: list[dict], wall: float) -> str:
+    lines = ["запись | код | время, с | процессор, с | ядер в среднем | память, МБ"]
+    for r in sorted(results, key=lambda r: -r["audio_sec"]):
+        cores = (
+            f"{r['cpu_sec'] / r['wall_sec']:.1f}"
+            if r["cpu_sec"] is not None and r["wall_sec"]
+            else "нет"
+        )
+        lines.append(
+            f"{r['record']} | {r['exit_code']} | {r['wall_sec']} | {r['cpu_sec']} | "
+            f"{cores} | {r['peak_rss_mb']}"
+        )
+        lines += [f"  {line}" for _, line in sorted(r["summaries"].items())]
+    cpu = sum(r["cpu_sec"] or 0 for r in results)
+    lines.append(f"всего {wall:.1f} с, ядер занято в среднем {cpu / wall:.1f}" if wall else "")
+    return "\n".join(lines)
+
+
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="nixyon-live-eval")
+    parser.add_argument("--eval", type=Path, required=True)
+    parser.add_argument("--models", type=Path, required=True)
+    parser.add_argument("--records", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("names", nargs="+")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse(argv)
+    if len(set(args.names)) != len(args.names):
+        say("nixyon-live-eval: запись указана дважды")
+        return 2
+    try:
+        runs = plan_runs(args.records, args.names)
+    except (OSError, ValueError) as e:
+        say(f"nixyon-live-eval: {e}")
+        return 2
+    args.out.mkdir(parents=True, exist_ok=True)
+    combos = {k: {"title": t, "combo": f"{k}={s}"} for k, (t, s) in COMBOS.items()}
+    (args.out / "combos.json").write_text(
+        json.dumps(combos, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    started = time.monotonic()
+    results = run_all(args, runs)
+    say(table(results, time.monotonic() - started))
+    complete = all(len(r["summaries"]) == len(COMBOS) for r in results)
+    return 0 if complete and all(r["exit_code"] == 0 for r in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

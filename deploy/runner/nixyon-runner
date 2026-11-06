@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Запуск раннера GitHub Actions. Сам раннер и его настройки после регистрации живут
+# на томе /runner; из образа он копируется туда при первом запуске и при смене версии.
+set -euo pipefail
+
+wanted="$(cat /opt/actions-runner/.nixyon-version)"
+if [[ "$(cat /runner/.nixyon-version 2> /dev/null)" != "${wanted}" ]]; then
+  cp -a /opt/actions-runner/. /runner/
+fi
+
+until [[ -f /runner/.runner ]]; do
+  echo "раннер ещё не зарегистрирован: на сервере install.sh runner-register"
+  sleep 30
+done
+
+cd /runner
+exec ./run.sh

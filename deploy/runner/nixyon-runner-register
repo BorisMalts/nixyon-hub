@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Регистрация раннера в репозитории. Одноразовый токен регистрации приходит через
+# stdin, на диск и в журналы не пишется.
+set -euo pipefail
+
+[[ -n "${NIXYON_RUNNER_URL:-}" ]] || { echo "ошибка: не задан NIXYON_RUNNER_URL" >&2; exit 1; }
+IFS= read -r token
+[[ "${token}" =~ ^[A-Za-z0-9]{20,}$ ]] || { echo "ошибка: токен регистрации не похож на настоящий" >&2; exit 1; }
+
+cd /runner
+./config.sh --unattended \
+  --url "${NIXYON_RUNNER_URL}" \
+  --token "${token}" \
+  --name nixyon-server \
+  --labels nixyon \
+  --work /runner/_work \
+  --replace \
+  --disableupdate
