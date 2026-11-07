@@ -101,6 +101,60 @@ async function poll() {
   setTimeout(poll, POLL_EVERY_MS);
 }
 
+// Одна сборка публикует две APK: полную с моделями и лёгкую без них. У лёгкой id полной
+// с окончанием «-lite», а заголовок с приставкой «Без моделей: ». Старые сборки без пары
+// показываются одной полной.
+const LITE_SUFFIX = "-lite";
+const LITE_PREFIX = "Без моделей: ";
+const WEIGHT = {
+  full: ["heavy", "Тяжёлая"],
+  lite: ["light", "Лёгкая"],
+};
+
+function groupBuilds(builds) {
+  const groups = new Map();
+  for (const build of builds) {
+    const lite = build.id.endsWith(LITE_SUFFIX);
+    const key = lite ? build.id.slice(0, -LITE_SUFFIX.length) : build.id;
+    const group = groups.get(key) ?? { key, full: null, lite: null };
+    group[lite ? "lite" : "full"] = build;
+    groups.set(key, group);
+  }
+  // Номер сборки: по порядку запуска среди показанных, самая ранняя получает 1.
+  const started = (g) => (g.full ?? g.lite).created_at;
+  const ordered = [...groups.values()].sort((a, b) => started(a) - started(b) || a.key.localeCompare(b.key));
+  ordered.forEach((group, index) => {
+    group.number = index + 1;
+  });
+  return ordered.reverse();
+}
+
+function weightTag(kind) {
+  const [tone, label] = WEIGHT[kind];
+  const tag = el("span", "tag", label);
+  tag.dataset.weight = tone;
+  return tag;
+}
+
+function variantRow(kind, build) {
+  const row = el("li", "build-variant");
+  const info = el("div", "build-variant-info");
+  info.append(weightTag(kind), el("span", "row-meta", size(build.size)));
+  const actions = el("div", "row-actions");
+  const download = el("a", "button button-primary", "Скачать");
+  download.href = `/api/builds/${encodeURIComponent(build.id)}/apk`;
+  download.setAttribute("download", build.file);
+  const qr = el("button", "button button-secondary", "QR-код");
+  qr.type = "button";
+  qr.addEventListener("click", () => {
+    $("qr-image").src = `/api/builds/${encodeURIComponent(build.id)}/qr.svg`;
+    $("qr-dialog").showModal();
+  });
+  actions.append(download, qr);
+  row.append(info, actions);
+  return row;
+}
+
 async function loadBuilds() {
   const list = $("builds");
   try {
@@ -110,25 +164,18 @@ async function loadBuilds() {
       list.append(el("li", "empty", "Готовых APK пока нет. Нажмите «Собрать APK»."));
       return;
     }
-    for (const build of builds) {
-      const item = el("li", "row");
-      const info = el("div");
-      info.append(
-        el("div", "row-title", build.subject || build.commit),
-        el("div", "row-meta", `${when(build.created_at)}, ${build.commit}, ${size(build.size)}, ${build.built_by}`),
-      );
-      const actions = el("div", "row-actions");
-      const download = el("a", "button button-primary", "Скачать");
-      download.href = `/api/builds/${encodeURIComponent(build.id)}/apk`;
-      download.setAttribute("download", build.file);
-      const qr = el("button", "button button-secondary", "QR-код");
-      qr.type = "button";
-      qr.addEventListener("click", () => {
-        $("qr-image").src = `/api/builds/${encodeURIComponent(build.id)}/qr.svg`;
-        $("qr-dialog").showModal();
-      });
-      actions.append(download, qr);
-      item.append(info, actions);
+    for (const group of groupBuilds(builds)) {
+      const main = group.full ?? group.lite;
+      const subject = group.full?.subject || group.lite?.subject.replace(LITE_PREFIX, "") || main.commit;
+      const item = el("li", "row build-group");
+      const head = el("div");
+      const title = el("div", "row-title");
+      title.append(el("span", "build-number", `№ ${group.number}`), el("span", null, subject));
+      head.append(title, el("div", "row-meta", `${when(main.created_at)}, ${main.commit}, ${main.built_by}`));
+      const variants = el("ul", "build-variants");
+      if (group.full) variants.append(variantRow("full", group.full));
+      if (group.lite) variants.append(variantRow("lite", group.lite));
+      item.append(head, variants);
       list.append(item);
     }
   } catch (error) {
