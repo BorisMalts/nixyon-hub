@@ -122,10 +122,15 @@ services:
     pids_limit: 4096
     environment:
       NIXYON_RUNNER_URL: ${NIXYON_RUNNER_URL:?}
+      # Модели CI берёт из папки зеркала: до зеркала по внешнему адресу раннеру не дойти,
+      # сеть Docker не пускает его к прокси хоста. Файлы те же, что получают телефоны.
+      NIXYON_MODELS_MIRROR: file:///models-mirror
       <<: *fast-build
     volumes:
       - runner:/runner
       - runner-cache:/cache
+      # Только чтение: код из любого пуша не должен подменить модели телефонов.
+      - models-mirror:/models-mirror:ro
       - runner-gradle:/home/builder/.gradle
       - runner-android:/home/builder/.android
       - ci-reports:/ci-reports
