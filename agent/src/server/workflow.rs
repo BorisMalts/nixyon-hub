@@ -26,6 +26,10 @@ pub trait Workflow: Send + Sync + 'static {
         Ok(())
     }
     fn built_apk(&self) -> PathBuf;
+    /// Лёгкая версия APK без моделей, если сборка её делает.
+    fn built_lite_apk(&self) -> Option<PathBuf> {
+        None
+    }
     fn repo_dir(&self) -> &Path;
 }
 
@@ -48,6 +52,8 @@ pub struct AndroidWorkflow {
 
 const PULL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+// Скрипт демо-сборки собирает две APK подряд: лёгкую и полную с моделями.
+const DEMO_BUILD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 // Полный прогон по всем наборам, включая части без текста, идёт сутками.
 const QUALITY_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const LIVE_EVAL_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
@@ -67,6 +73,11 @@ const PUBLISH_SCRIPT: &str = "publish-models.sh";
 pub const LIVE_EVAL_DRIVER: &str = "nixyon-live-eval";
 
 impl AndroidWorkflow {
+    fn lite_apk(&self) -> PathBuf {
+        self.repo_dir
+            .join("nixyon-app/src-tauri/gen/android/app/build/outputs/nixyon-lite.apk")
+    }
+
     /// Список клипов с плохим эталоном для quality.sh: рядом с папкой отчёта, её читает
     /// рабочий контейнер. Задания идут по одному, поэтому файл один.
     pub fn exclude_file(&self) -> PathBuf {
@@ -257,16 +268,19 @@ impl Workflow for AndroidWorkflow {
             JobKind::Pull => vec![self.step("git", &["pull", "--ff-only"], PULL_TIMEOUT)],
             JobKind::Build => {
                 let apk = self.built_apk().to_string_lossy().into_owned();
+                let lite = self.lite_apk().to_string_lossy().into_owned();
                 let mut steps = vec![
                     // Gradle дописывает APK на месте и оставляет в файле старые куски:
-                    // без удаления APK раздувался втрое.
-                    self.step("rm", &["-f", &apk], PULL_TIMEOUT),
+                    // без удаления APK раздувался втрое. Лёгкая версия от прошлой сборки
+                    // тоже удаляется, чтобы не попасть в артефакты чужой сборки.
+                    self.step("rm", &["-f", &apk, &lite], PULL_TIMEOUT),
                 ];
                 steps.extend(self.fetch_steps(&[]));
-                // Release с моделями внутри APK, подпись отладочным ключом.
+                // Две версии release, подпись отладочным ключом: лёгкая без моделей, затем
+                // полная с моделями внутри APK.
                 steps.push(Step {
                     heavy: true,
-                    ..self.step(&self.script("build-demo-apk.sh"), &[], BUILD_TIMEOUT)
+                    ..self.step(&self.script("build-demo-apk.sh"), &[], DEMO_BUILD_TIMEOUT)
                 });
                 steps
             }
@@ -323,6 +337,12 @@ impl Workflow for AndroidWorkflow {
 
     fn built_apk(&self) -> PathBuf {
         self.repo_dir.join("nixyon-app/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk")
+    }
+
+    // Скрипт сборки Nixyon кладёт лёгкую версию сюда; если скрипт старый и её не делает,
+    // сохраняется только полная.
+    fn built_lite_apk(&self) -> Option<PathBuf> {
+        Some(self.lite_apk())
     }
 
     fn repo_dir(&self) -> &Path {
@@ -497,11 +517,15 @@ mod tests {
         let heavy: Vec<bool> = build.iter().map(|s| s.heavy).collect();
         assert_eq!(heavy, [false, false, false, true]);
         assert!(build.iter().all(|s| s.dir == repo));
-        assert!(build[1..].iter().all(|s| s.timeout == BUILD_TIMEOUT));
+        assert!(build[1..3].iter().all(|s| s.timeout == BUILD_TIMEOUT));
+        assert_eq!(build[3].timeout, DEMO_BUILD_TIMEOUT);
         assert!(
             flow.built_apk()
                 .ends_with("apk/universal/release/app-universal-release.apk")
         );
+        let lite = flow.built_lite_apk().unwrap();
+        assert!(lite.ends_with("build/outputs/nixyon-lite.apk"));
+        assert_eq!(build[0].args[2], lite.to_string_lossy());
     }
 
     #[test]

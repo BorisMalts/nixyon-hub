@@ -9,7 +9,7 @@ use nixyon_agent::protocol::{
     Artifact, DatasetSummary, ErrorCode, JobKind, JobState, JobStatus, ServerFrame, encode,
 };
 use nixyon_hub::config::HubConfig;
-use nixyon_hub::state::AppState;
+use nixyon_hub::state::{AppState, MODEL_DOWNLOADS_PER_IP};
 use nixyon_hub::{db, routes, users};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -1511,7 +1511,7 @@ async fn model_mirror_is_open_without_sign_in_and_sends_whole_files_and_ranges()
 }
 
 #[tokio::test]
-async fn one_address_gets_sixteen_model_downloads_at_a_time() {
+async fn one_address_gets_up_to_the_per_address_limit_of_model_downloads_at_a_time() {
     let hub = hub("models-slots").await;
     let mirror = hub.artifacts.join("models");
     std::fs::create_dir_all(&mirror).unwrap();
@@ -1525,7 +1525,7 @@ async fn one_address_gets_sixteen_model_downloads_at_a_time() {
 
     // Тело не прочитано: место занято, пока ответ жив.
     let mut open = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..MODEL_DOWNLOADS_PER_IP {
         let response = send(&hub.app, get("198.51.100.2")).await;
         assert_eq!(response.status(), StatusCode::OK);
         open.push(response);

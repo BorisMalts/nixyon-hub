@@ -18,10 +18,10 @@ const LIMITER_KEYS: usize = 10_000;
 pub const PARALLEL_DOWNLOADS: usize = 64;
 /// Одновременных отдач APK одному пользователю: менеджер загрузок качает файл кусками.
 pub const USER_DOWNLOADS: usize = 32;
-/// Одновременных отдач файлов зеркала моделей: на весь хаб и на один адрес. Скрипт
-/// загрузки качает большой файл 16 кусками сразу.
-pub const MODEL_DOWNLOADS: usize = 64;
-pub const MODEL_DOWNLOADS_PER_IP: usize = 16;
+/// Одновременных отдач файлов зеркала моделей: на весь хаб и на один адрес. Приложение
+/// качает модели 52 соединениями сразу, скрипт загрузки большой файл 16 кусками.
+pub const MODEL_DOWNLOADS: usize = 256;
+pub const MODEL_DOWNLOADS_PER_IP: usize = 52;
 
 #[derive(Clone)]
 pub struct AppState {

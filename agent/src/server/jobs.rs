@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -322,36 +322,31 @@ impl Jobs {
             .take(12)
             .collect::<String>()
             .to_lowercase();
-        let created_at = now();
-        let id = format!(
-            "{}-{}",
-            stamp(created_at),
-            if commit.is_empty() {
-                "unknown".into()
-            } else {
-                commit.clone()
-            }
-        );
-        let file = format!("nixyon-{id}.apk");
-        tokio::fs::create_dir_all(&self.artifacts_dir).await?;
-        let target = self.artifacts_dir.join(&file);
-        let size = tokio::fs::copy(self.workflow.built_apk(), &target).await?;
-        tokio::spawn(async move {
-            if let Err(e) = gzip_beside(&target).await {
-                tracing::warn!(error = %e, "сжатая копия APK не сделана");
-            }
-        });
-        let artifact = Artifact {
-            id: id.clone(),
-            file,
-            commit,
-            subject: subject.chars().take(200).collect(),
-            created_at,
-            size,
-            built_by: self.status().map(|s| s.started_by).unwrap_or_default(),
+        let commit = if commit.is_empty() {
+            "unknown".to_owned()
+        } else {
+            commit
         };
-        let meta = self.artifacts_dir.join(format!("{id}.json"));
-        tokio::fs::write(&meta, serde_json::to_vec_pretty(&artifact)?).await?;
+        let created_at = now();
+        let id = format!("{}-{commit}", stamp(created_at));
+        let subject: String = subject.chars().take(200).collect();
+        // Лёгкая версия без моделей собирается первой и в списке стоит под полной.
+        if let Some(lite) = self.workflow.built_lite_apk().filter(|p| p.is_file()) {
+            let built = Built {
+                id: format!("{id}-lite"),
+                commit: commit.clone(),
+                subject: format!("{LITE_PREFIX}{subject}"),
+                created_at: created_at - 1,
+            };
+            self.publish_apk(&lite, built).await?;
+        }
+        let built = Built {
+            id,
+            commit,
+            subject,
+            created_at,
+        };
+        let artifact = self.publish_apk(&self.workflow.built_apk(), built).await?;
         let dir = self.artifacts_dir.clone();
         if !matches!(
             tokio::task::spawn_blocking(move || prune_apks(&dir, KEEP_APKS)).await,
@@ -361,7 +356,46 @@ impl Jobs {
         }
         Ok(artifact)
     }
+
+    async fn publish_apk(
+        &self,
+        apk: &Path,
+        built: Built,
+    ) -> Result<Artifact, Box<dyn std::error::Error + Send + Sync>> {
+        let file = format!("nixyon-{}.apk", built.id);
+        tokio::fs::create_dir_all(&self.artifacts_dir).await?;
+        let target = self.artifacts_dir.join(&file);
+        let size = tokio::fs::copy(apk, &target).await?;
+        tokio::spawn(async move {
+            if let Err(e) = gzip_beside(&target).await {
+                tracing::warn!(error = %e, "сжатая копия APK не сделана");
+            }
+        });
+        let artifact = Artifact {
+            id: built.id,
+            file,
+            commit: built.commit,
+            subject: built.subject,
+            created_at: built.created_at,
+            size,
+            built_by: self.status().map(|s| s.started_by).unwrap_or_default(),
+        };
+        let meta = self.artifacts_dir.join(format!("{}.json", artifact.id));
+        tokio::fs::write(&meta, serde_json::to_vec_pretty(&artifact)?).await?;
+        Ok(artifact)
+    }
 }
+
+/// Сборка, которую надо сохранить в артефакты: всё, кроме файла и размера.
+struct Built {
+    id: String,
+    commit: String,
+    subject: String,
+    created_at: i64,
+}
+
+/// Подпись лёгкой версии в списке сборок.
+const LITE_PREFIX: &str = "Без моделей: ";
 
 fn heavy_label(kind: JobKind) -> &'static str {
     match kind {
@@ -419,6 +453,10 @@ mod tests {
 
         fn built_apk(&self) -> PathBuf {
             self.dir.join("app.apk")
+        }
+
+        fn built_lite_apk(&self) -> Option<PathBuf> {
+            Some(self.dir.join("lite.apk"))
         }
 
         fn repo_dir(&self) -> &Path {
@@ -654,6 +692,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(meta, artifact);
+    }
+
+    #[tokio::test]
+    async fn a_build_with_a_light_apk_saves_both_and_the_full_one_is_the_result() {
+        let dir = temp("lite");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Две версии",
+            ])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        let jobs = Jobs::new(
+            Arc::new(Fake {
+                dir: dir.clone(),
+                script: "printf full > app.apk && printf lite > lite.apk",
+            }),
+            dir.join("out"),
+        );
+        jobs.start(JobKind::Build, "a@x.org", JobPlan::default())
+            .unwrap();
+        let done = wait_finished(&jobs).await;
+        assert_eq!(done.state, JobState::Succeeded);
+        let full = done.artifact.unwrap();
+        assert_eq!(full.subject, "Две версии");
+        let lite: Artifact = serde_json::from_slice(
+            &std::fs::read(dir.join("out").join(format!("{}-lite.json", full.id))).unwrap(),
+        )
+        .unwrap();
+        assert!(Artifact::is_valid_id(&lite.id));
+        assert_eq!(lite.subject, format!("{LITE_PREFIX}Две версии"));
+        assert!(lite.created_at < full.created_at);
+        assert_eq!(
+            std::fs::read(dir.join("out").join(&full.file)).unwrap(),
+            b"full"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("out").join(&lite.file)).unwrap(),
+            b"lite"
+        );
     }
 
     #[tokio::test]
