@@ -16,6 +16,8 @@ pub struct Job {
     pub plan: Vec<QualityTake>,
     pub records: Vec<String>,
     pub training: Vec<String>,
+    /// Номер прогона GitHub Actions для команд CI.
+    pub ci_run: String,
 }
 
 #[derive(Clone)]
@@ -101,6 +103,7 @@ impl AgentLink {
             plan: job.plan,
             records: job.records,
             training: job.training,
+            ci_run: job.ci_run,
         };
         let line = encode(&request).map_err(|_| LinkError::Protocol)?;
         writer

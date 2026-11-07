@@ -14,6 +14,10 @@ pub enum Op {
     Status,
     Follow,
     Terminal,
+    /// Отменить прогон CI в GitHub Actions.
+    CiCancel,
+    /// Запустить прогон CI в GitHub Actions заново.
+    CiRerun,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,4 +38,7 @@ pub struct Request {
     /// Наборы для задания `Training`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub training: Vec<String>,
+    /// Номер прогона GitHub Actions для `CiCancel` и `CiRerun`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ci_run: String,
 }

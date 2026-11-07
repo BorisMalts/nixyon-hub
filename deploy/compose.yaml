@@ -70,6 +70,7 @@ services:
       NIXYON_HEAVY_LOCK: /locks/heavy.d
       NIXYON_DATASETS: /datasets
       NIXYON_MODELS_MIRROR_DIR: /models-mirror
+      NIXYON_GITHUB_TOKEN_FILE: /run/secrets/github_token
       NIXYON_TRAINING_DATA: /training-data
       <<: &fast-build
         # Без отладочной информации: APK втрое меньше и быстрее собирается.
@@ -94,7 +95,9 @@ services:
       # живут в сетевом пространстве, которое сетевой стек gVisor не видит. Берутся
       # DNS-серверы Hetzner, которыми пользуется сам хост.
       - ./resolv.conf:/etc/resolv.conf:ro
-    secrets: [agent_token, deploy_key]
+    # github_token: отмена и перезапуск прогонов CI из вкладки «Тесты». Права у токена
+    # только Actions на репозиторий Nixyon; пустой файл значит, что кнопки отказывают.
+    secrets: [agent_token, deploy_key, github_token]
     networks:
       nixyon_internal:
         ipv4_address: 10.231.0.20
@@ -144,6 +147,8 @@ secrets:
     file: ${NIXYON_STATE:?}/secrets/agent_token
   deploy_key:
     file: ${NIXYON_STATE:?}/secrets/deploy_key
+  github_token:
+    file: ${NIXYON_STATE:?}/secrets/github_token
 
 volumes:
   hub-data:

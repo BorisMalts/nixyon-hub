@@ -77,6 +77,40 @@ function renderSteps(run) {
   return list;
 }
 
+// Остановить идущий прогон или запустить остановленный заново. Команду в GitHub отдаёт
+// агент сборки; заново значит новая попытка того же коммита, а не продолжение.
+const CONTROL = {
+  running: ["cancel", "Остановить прогон", "button button-danger", "Останавливаю…", "Прогон остановлен"],
+  cancelled: ["rerun", "Возобновить", "button button-secondary", "Запускаю заново…", "Прогон запущен заново"],
+  lost: ["rerun", "Возобновить", "button button-secondary", "Запускаю заново…", "Прогон запущен заново"],
+};
+
+function renderControl(run) {
+  const control = CONTROL[run.status];
+  if (!control || !run.run_id) return null;
+  const [action, label, style, pending, done] = control;
+  const box = el("div", "run-control");
+  const button = el("button", style, label);
+  button.type = "button";
+  const note = el("span", "row-meta");
+  note.setAttribute("role", "status");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    note.textContent = pending;
+    try {
+      await api(`/api/ci/github/${encodeURIComponent(run.run_id)}/${action}`, { method: "POST" });
+      note.textContent = done;
+      setTimeout(load, 3000);
+    } catch (error) {
+      note.textContent = "";
+      button.disabled = false;
+      showError("tests-error", error);
+    }
+  });
+  box.append(button, note);
+  return box;
+}
+
 function renderRun(run) {
   const item = el("li", "run");
   const [tone, label] = RUN[run.status] ?? ["stopped", run.status];
@@ -90,6 +124,8 @@ function renderRun(run) {
   if (run.failed_step) text.append(el("div", "run-failed", `Упал шаг «${run.failed_step}»`));
   head.append(badge(tone, label), text);
   item.append(head);
+  const control = renderControl(run);
+  if (control) item.append(control);
   if (expanded) {
     const detail = el("div", "run-detail");
     detail.append(renderSteps(run));

@@ -9,6 +9,12 @@ pub enum ErrorCode {
     BadRequest,
     Busy,
     Failed,
+    /// Для команды на сервере не хватает настройки (например, токена GitHub).
+    NotConfigured,
+    /// Внешний сервис не дал доступа.
+    Denied,
+    /// Команда не подходит к нынешнему состоянию (прогон уже закончился или ещё идёт).
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +43,8 @@ pub enum ServerFrame {
     Datasets {
         datasets: Vec<DatasetSummary>,
     },
+    /// Команда без своего ответа выполнена.
+    Done,
     Error {
         code: ErrorCode,
         message: String,

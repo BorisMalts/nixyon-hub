@@ -459,6 +459,85 @@ async fn job_start_maps_agent_answers() {
 }
 
 #[tokio::test]
+async fn ci_run_is_cancelled_and_rerun_through_the_agent() {
+    let h = hub("ci-control").await;
+    let cookie = sign_in(&h.app).await;
+    let post = |uri: &str| {
+        request("POST", uri)
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    *h.reply.lock().unwrap() = Some(ServerFrame::Done);
+    let ok = send(&h.app, post("/api/ci/github/42372406574/cancel")).await;
+    assert_eq!(ok.status(), StatusCode::NO_CONTENT);
+    let sent = h.seen.lock().unwrap().last().cloned().unwrap();
+    assert!(sent.contains(r#""op":"ci_cancel""#) && sent.contains(r#""ci_run":"42372406574""#));
+    assert_eq!(
+        send(&h.app, post("/api/ci/github/42372406574/rerun"))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        h.seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains(r#""op":"ci_rerun""#)
+    );
+
+    let before = h.seen.lock().unwrap().len();
+    assert_eq!(
+        send(&h.app, post("/api/ci/github/12a/cancel"))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.seen.lock().unwrap().len(),
+        before,
+        "неверный номер не уходит агенту"
+    );
+
+    for (code, status) in [
+        (ErrorCode::NotConfigured, StatusCode::SERVICE_UNAVAILABLE),
+        (ErrorCode::Denied, StatusCode::BAD_GATEWAY),
+        (ErrorCode::Conflict, StatusCode::CONFLICT),
+        (ErrorCode::Failed, StatusCode::BAD_GATEWAY),
+    ] {
+        *h.reply.lock().unwrap() = Some(ServerFrame::Error {
+            code,
+            message: "x".into(),
+        });
+        assert_eq!(
+            send(&h.app, post("/api/ci/github/1/cancel")).await.status(),
+            status
+        );
+    }
+
+    let no_origin = request("POST", "/api/ci/github/1/cancel")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        send(&h.app, no_origin).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let signed_out = request("POST", "/api/ci/github/1/cancel")
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        send(&h.app, signed_out).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
 async fn quality_check_starts_from_our_origin_and_reports_only_known_files() {
     let h = hub("quality").await;
     let cookie = sign_in(&h.app).await;

@@ -15,6 +15,8 @@ pub enum EventKind {
     QualityUnmarked,
     TerminalOpened,
     TerminalClosed,
+    CiCancelled,
+    CiRerun,
 }
 
 impl EventKind {
@@ -33,6 +35,8 @@ impl EventKind {
             EventKind::QualityUnmarked => "quality_unmarked",
             EventKind::TerminalOpened => "terminal_opened",
             EventKind::TerminalClosed => "terminal_closed",
+            EventKind::CiCancelled => "ci_cancelled",
+            EventKind::CiRerun => "ci_rerun",
         }
     }
 }

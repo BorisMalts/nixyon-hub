@@ -12,6 +12,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use super::auth::TokenCheck;
 use super::datasets::{check_plan, list_datasets};
 use super::frames::{read_line_max, send};
+use super::github_actions::{CiAction, GithubActions};
 use super::job_plan::JobPlan;
 use super::jobs::{JobEvent, Jobs};
 use super::live_records::{LIVE_DIR, check_records};
@@ -35,6 +36,8 @@ pub struct Context {
     pub terminals: AtomicUsize,
     pub request_timeout: Duration,
     pub allowed_peers: Option<Vec<IpAddr>>,
+    /// Прогоны CI в GitHub; None, если Nixyon клонируется не с GitHub.
+    pub github: Option<GithubActions>,
 }
 
 pub async fn serve(listener: TcpListener, context: Arc<Context>) -> std::io::Result<()> {
@@ -194,6 +197,27 @@ async fn handle(
             send(&mut writer, &ServerFrame::Datasets { datasets }).await?
         }
         Op::Follow => follow(&mut writer, context).await?,
+        Op::CiCancel | Op::CiRerun => {
+            let action = if request.op == Op::CiCancel {
+                CiAction::Cancel
+            } else {
+                CiAction::Rerun
+            };
+            let result = match &context.github {
+                Some(github) => github.run(action, &request.ci_run).await,
+                None => Err(super::github_actions::CiError::NotConfigured),
+            };
+            match result {
+                Ok(()) => {
+                    tracing::info!(user = %request.user, run = %request.ci_run, ?action, "команда CI выполнена");
+                    send(&mut writer, &ServerFrame::Done).await?
+                }
+                Err(e) => {
+                    tracing::warn!(user = %request.user, run = %request.ci_run, ?action, error = %e, "команда CI не выполнена");
+                    reply_error(&mut writer, e.code(), &e.to_string()).await?
+                }
+            }
+        }
         Op::Terminal => {
             if context.terminals.fetch_add(1, Ordering::SeqCst) >= MAX_TERMINALS {
                 context.terminals.fetch_sub(1, Ordering::SeqCst);
@@ -327,6 +351,7 @@ mod tests {
             terminals: AtomicUsize::new(0),
             request_timeout: Duration::from_millis(300),
             allowed_peers: None,
+            github: None,
         });
         tokio::spawn(serve(listener, context));
         addr
@@ -374,6 +399,7 @@ mod tests {
             plan,
             records,
             training,
+            ci_run: String::new(),
         };
         write.write_all(&encode(&request).unwrap()).await.unwrap();
         let mut reader = BufReader::new(read);
@@ -386,6 +412,47 @@ mod tests {
             frames.push(decode(&line).unwrap());
         }
         frames
+    }
+
+    async fn call_ci(addr: std::net::SocketAddr, op: Op, run: &str) -> Vec<ServerFrame> {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let request = Request {
+            token: TOKEN.into(),
+            op,
+            user: "a@x.org".into(),
+            cols: 0,
+            rows: 0,
+            plan: Vec::new(),
+            records: Vec::new(),
+            training: Vec::new(),
+            ci_run: run.into(),
+        };
+        write.write_all(&encode(&request).unwrap()).await.unwrap();
+        let mut reader = BufReader::new(read);
+        let mut frames = Vec::new();
+        while let Ok(Some(line)) =
+            tokio::time::timeout(Duration::from_secs(10), read_line(&mut reader))
+                .await
+                .unwrap()
+        {
+            frames.push(decode(&line).unwrap());
+        }
+        frames
+    }
+
+    #[tokio::test]
+    async fn ci_commands_without_github_setup_answer_not_configured() {
+        let addr = start().await;
+        for op in [Op::CiCancel, Op::CiRerun] {
+            assert!(matches!(
+                call_ci(addr, op, "123").await.as_slice(),
+                [ServerFrame::Error {
+                    code: ErrorCode::NotConfigured,
+                    ..
+                }]
+            ));
+        }
     }
 
     #[tokio::test]
@@ -633,6 +700,7 @@ mod tests {
             terminals: AtomicUsize::new(0),
             request_timeout: Duration::from_millis(300),
             allowed_peers: Some(vec![IpAddr::from([10, 9, 8, 7])]),
+            github: None,
         });
         tokio::spawn(serve(listener, context));
         let stream = TcpStream::connect(addr).await.unwrap();
@@ -646,6 +714,7 @@ mod tests {
             plan: Vec::new(),
             records: Vec::new(),
             training: Vec::new(),
+            ci_run: String::new(),
         };
         let _ = write.write_all(&encode(&request).unwrap()).await;
         let mut reader = BufReader::new(read);

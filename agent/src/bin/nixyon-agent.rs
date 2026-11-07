@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use nixyon_agent::server::{
-    AgentConfig, AndroidWorkflow, Context, EXPERIMENTS_DIR, HeavyLock, Jobs, REQUEST_TIMEOUT,
-    TRAINING_DIR, TokenCheck, serve,
+    AgentConfig, AndroidWorkflow, Context, EXPERIMENTS_DIR, GithubActions, HeavyLock, Jobs,
+    REQUEST_TIMEOUT, TRAINING_DIR, TokenCheck, serve,
 };
 use tokio::net::TcpListener;
 
@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         terminals: AtomicUsize::new(0),
         request_timeout: REQUEST_TIMEOUT,
         allowed_peers: config.allowed_peers.clone(),
+        github: GithubActions::new(&config.repo_url, config.github_token_file.clone()),
     });
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, "агент слушает");

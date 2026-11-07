@@ -51,6 +51,8 @@ pub fn router(state: AppState) -> Router {
         .route("/ci/runs", get(ci::list))
         .route("/ci/runs/{id}", get(ci::run))
         .route("/ci/runs/{id}/steps/{n}/log", get(ci::step_log))
+        .route("/ci/github/{run_id}/cancel", post(ci::cancel))
+        .route("/ci/github/{run_id}/rerun", post(ci::rerun))
         .route("/quality", get(quality::summary))
         .route("/quality/datasets", get(quality::datasets))
         .route("/quality/clip-sets", get(quality::clip_sets))

@@ -17,6 +17,8 @@ pub struct AgentConfig {
     pub models_mirror: Option<PathBuf>,
     /// Папка свободных наборов для обучения, которые агент качает сам.
     pub training_data: PathBuf,
+    /// Токен GitHub для отмены и перезапуска прогонов CI; без него эти команды отказывают.
+    pub github_token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +41,7 @@ impl AgentConfig {
             heavy_lock: std::env::var_os("NIXYON_HEAVY_LOCK").map(PathBuf::from),
             models_mirror: std::env::var_os("NIXYON_MODELS_MIRROR_DIR").map(PathBuf::from),
             training_data: var("NIXYON_TRAINING_DATA")?.into(),
+            github_token_file: std::env::var_os("NIXYON_GITHUB_TOKEN_FILE").map(PathBuf::from),
             allowed_peers: match std::env::var("NIXYON_AGENT_ALLOWED_PEERS") {
                 Ok(list) => Some(
                     list.split(',')

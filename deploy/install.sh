@@ -42,6 +42,10 @@ prepare() {
   fi
   chown "${WORKSPACE_UID}:${WORKSPACE_UID}" "${STATE}/secrets/deploy_key"
   chmod 600 "${STATE}/secrets/deploy_key"
+  # Токен GitHub кладёт владелец; пустой файл нужен compose, кнопки CI тогда отказывают.
+  [[ -f "${STATE}/secrets/github_token" ]] || : > "${STATE}/secrets/github_token"
+  chown "${WORKSPACE_UID}:${WORKSPACE_UID}" "${STATE}/secrets/github_token"
+  chmod 600 "${STATE}/secrets/github_token"
   umask 077
   cat > "${STATE}/.env" <<ENV
 NIXYON_PUBLIC_ORIGIN=${origin}

@@ -342,6 +342,12 @@ h2 {
   color: var(--accent-text);
 }
 
+/* Действие, которое прерывает работу: та же подложка, что у вторичной, текст цвета ошибки. */
+.button-danger {
+  background: var(--fill);
+  color: var(--danger);
+}
+
 .button-plain {
   background: transparent;
   color: var(--accent-text);
@@ -417,6 +423,15 @@ h2 {
 .row-actions {
   display: flex;
   gap: var(--space-2);
+}
+
+/* Остановка и повторный запуск прогона CI под его заголовком. */
+.run-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-5) var(--space-4);
 }
 
 /* Сборка APK: номер и заголовок, под ними полная и лёгкая версии с метками веса. */

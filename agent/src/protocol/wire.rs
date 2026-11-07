@@ -43,6 +43,7 @@ mod tests {
             plan: Vec::new(),
             records: Vec::new(),
             training: vec!["speechocean762".into()],
+            ci_run: String::new(),
         };
         let line = encode(&request).unwrap();
         assert_eq!(line.iter().filter(|b| **b == b'\n').count(), 1);
