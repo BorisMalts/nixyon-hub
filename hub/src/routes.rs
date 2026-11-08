@@ -1,3 +1,4 @@
+mod apk_response;
 mod builds;
 mod ci;
 mod experiments;
@@ -7,6 +8,7 @@ mod jobs;
 mod marks;
 mod models;
 mod pages;
+mod public_apk;
 mod quality;
 mod session;
 mod stats;
@@ -88,6 +90,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/models/", get(models::list))
         .route("/models/{sha256}", get(models::file))
+        .route("/apk", get(public_apk::page))
+        .route("/apk/full", get(public_apk::full))
+        .route("/apk/lite", get(public_apk::lite))
         .merge(pages::routes())
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(

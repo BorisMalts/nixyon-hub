@@ -22,6 +22,9 @@ pub const USER_DOWNLOADS: usize = 32;
 /// качает модели 52 соединениями сразу, скрипт загрузки большой файл 16 кусками.
 pub const MODEL_DOWNLOADS: usize = 256;
 pub const MODEL_DOWNLOADS_PER_IP: usize = 52;
+/// Одновременных отдач APK со страницы без входа на один адрес. Браузер качает одним
+/// соединением, менеджер загрузок несколькими кусками.
+pub const PUBLIC_APK_DOWNLOADS_PER_IP: usize = 8;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -35,6 +38,7 @@ pub struct AppState {
     pub ci_runs: Arc<RunsCache>,
     pub model_downloads: Arc<Semaphore>,
     pub model_ip_slots: Arc<IpSlots>,
+    pub public_apk_ip_slots: Arc<IpSlots>,
 }
 
 impl AppState {
@@ -54,6 +58,7 @@ impl AppState {
             ci_runs: Arc::new(RunsCache::default()),
             model_downloads: Arc::new(Semaphore::new(MODEL_DOWNLOADS)),
             model_ip_slots: Arc::new(IpSlots::new(MODEL_DOWNLOADS_PER_IP, LIMITER_KEYS)),
+            public_apk_ip_slots: Arc::new(IpSlots::new(PUBLIC_APK_DOWNLOADS_PER_IP, LIMITER_KEYS)),
             action_limiter: Arc::new(RateLimiter::new(
                 ACTIONS_PER_MINUTE,
                 Duration::from_secs(60),

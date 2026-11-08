@@ -9,7 +9,7 @@ use nixyon_agent::protocol::{
     Artifact, DatasetSummary, ErrorCode, JobKind, JobState, JobStatus, ServerFrame, encode,
 };
 use nixyon_hub::config::HubConfig;
-use nixyon_hub::state::{AppState, MODEL_DOWNLOADS_PER_IP};
+use nixyon_hub::state::{AppState, MODEL_DOWNLOADS_PER_IP, PUBLIC_APK_DOWNLOADS_PER_IP};
 use nixyon_hub::{db, routes, users};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -1753,4 +1753,131 @@ async fn training_files_need_sign_in_and_only_reports_and_weights_are_sent() {
             "{uri}"
         );
     }
+}
+
+fn publish(dir: &std::path::Path, id: &str, created_at: i64, body: &[u8]) {
+    let artifact = Artifact {
+        id: id.into(),
+        file: format!("nixyon-{id}.apk"),
+        commit: "abc1234".into(),
+        subject: "Проверка".into(),
+        created_at,
+        size: body.len() as u64,
+        built_by: EMAIL.into(),
+    };
+    std::fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec(&artifact).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dir.join(&artifact.file), body).unwrap();
+}
+
+#[tokio::test]
+async fn the_latest_apks_are_listed_and_downloaded_without_sign_in() {
+    let h = hub("public-apk").await;
+    let empty = send(
+        &h.app,
+        model_request("/apk", "198.51.100.9")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(empty.status(), StatusCode::OK);
+    let text = String::from_utf8(body_bytes(empty).await).unwrap();
+    assert!(text.contains("Сборок пока нет"));
+    for uri in ["/apk/full", "/apk/lite"] {
+        let missing = send(
+            &h.app,
+            model_request(uri, "198.51.100.9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{uri}");
+    }
+
+    publish(&h.artifacts, "20261101-100000-old1234", 10, b"old-full");
+    publish(&h.artifacts, "20261101-100000-old1234-lite", 9, b"old-lite");
+    publish(&h.artifacts, "20261108-100000-new5678", 20, b"new-full!");
+    publish(
+        &h.artifacts,
+        "20261108-100000-new5678-lite",
+        19,
+        b"new-lite",
+    );
+
+    let page = send(
+        &h.app,
+        model_request("/apk", "198.51.100.9")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+    let text = String::from_utf8(body_bytes(page).await).unwrap();
+    assert!(text.contains("href=\"/apk/full\""));
+    assert!(text.contains("href=\"/apk/lite\""));
+    assert!(!text.contains("new5678"));
+    assert!(!text.contains(EMAIL));
+
+    for (uri, name, body) in [
+        ("/apk/full", "nixyon.apk", &b"new-full!"[..]),
+        ("/apk/lite", "nixyon-lite.apk", &b"new-lite"[..]),
+    ] {
+        let file = send(
+            &h.app,
+            model_request(uri, "198.51.100.9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(file.status(), StatusCode::OK, "{uri}");
+        assert_eq!(
+            file.headers()[header::CONTENT_DISPOSITION],
+            format!("attachment; filename=\"{name}\"")
+        );
+        assert_eq!(file.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(body_bytes(file).await, body);
+    }
+
+    let part = send(
+        &h.app,
+        model_request("/apk/full", "198.51.100.9")
+            .header(header::RANGE, "bytes=4-")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body_bytes(part).await, b"full!");
+    std::fs::remove_dir_all(&h.artifacts).unwrap();
+}
+
+#[tokio::test]
+async fn one_address_gets_up_to_the_per_address_limit_of_public_apk_downloads() {
+    let h = hub("public-apk-slots").await;
+    publish(&h.artifacts, "20261108-100000-new5678", 1, b"apk");
+    let get = |ip: &'static str| model_request("/apk/full", ip).body(Body::empty()).unwrap();
+
+    // Тело не прочитано: место занято, пока ответ жив.
+    let mut open = Vec::new();
+    for _ in 0..PUBLIC_APK_DOWNLOADS_PER_IP {
+        let response = send(&h.app, get("198.51.100.2")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        open.push(response);
+    }
+    let refused = send(&h.app, get("198.51.100.2")).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        send(&h.app, get("198.51.100.3")).await.status(),
+        StatusCode::OK
+    );
+    open.pop();
+    assert_eq!(
+        send(&h.app, get("198.51.100.2")).await.status(),
+        StatusCode::OK
+    );
+    std::fs::remove_dir_all(&h.artifacts).unwrap();
 }
